@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>金沢大学 シラバス一覧</title>
+<style>
+  :root { color-scheme: light dark; --line: #8885; --muted: #888; }
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: Canvas; color: CanvasText; }
+  header, main { padding: 12px 16px; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  form { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; }
+  label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+  input, select { font: inherit; padding: 4px 6px; max-width: 100%; }
+  input[type="search"] { width: 20em; }
+  #status { margin: 0 0 8px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  td:nth-child(1), td:nth-child(4), td:nth-child(5) { white-space: nowrap; }
+  td:nth-child(2) { min-width: 14em; }
+  small { color: var(--muted); }
+  #more { margin: 12px 0; font: inherit; padding: 6px 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>金沢大学 シラバス一覧</h1>
+  <form>
+    <label>年度 <select name="year"></select></label>
+    <label>開講学域・研究科 <select name="faculty"></select></label>
+    <label>学類・専攻 <select name="department" disabled></select></label>
+    <label>開講期
+      <select name="term"><option value="">すべて</option><option>Q1</option><option>Q2</option><option>Q3</option><option>Q4</option></select>
+    </label>
+    <label>曜日
+      <select name="day"><option value="">すべて</option><option>月</option><option>火</option><option>水</option><option>木</option><option>金</option><option>土</option><option>集中</option></select>
+    </label>
+    <label>時限
+      <select name="period"><option value="">すべて</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option></select>
+    </label>
+    <label>キーワード (科目名・教員・時間割コード)
+      <input type="search" name="q" placeholder="例: プログラミング 山田">
+    </label>
+  </form>
+</header>
+<main>
+  <p id="status" role="status">読み込み中…</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>時間割コード</th><th>授業科目名</th><th>担当教員</th><th>開講期</th><th>曜日・時限</th><th>開講学域・学類</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <button id="more" type="button" hidden>さらに表示</button>
+</main>
+<script type="module">
+const form = document.querySelector("form");
+const f = form.elements;
+const status = document.querySelector("#status");
+const tbody = document.querySelector("tbody");
+const more = document.querySelector("#more");
+const PAGE = 500;
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+const norm = (s) => s.normalize("NFKC").toLowerCase(); // 全角/半角・大文字小文字を無視
+const link = (url, text) => (/^https?:\/\//.test(url ?? "") ? `<a href="${esc(url)}" target="_blank" rel="noopener">${text}</a>` : text);
+const getJSON = async (url) => {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${res.status} ${url}`);
+  return res.json();
+};
+const setOptions = (select, values) =>
+  (select.innerHTML = `<option value="">すべて</option>` + values.map((v) => `<option>${esc(v)}</option>`).join(""));
+const uniq = (a) => [...new Set(a)].filter(Boolean);
+
+// "金3〜4,月1" → [["金",3],["金",4],["月",1]] / "集中" → [["集中",0]]
+const slots = (schedule) =>
+  schedule.split(",").flatMap((p) => {
+    const m = p.match(/^(.)(\d+)(?:〜(\d+))?$/);
+    if (!m) return [[p, 0]];
+    const out = [];
+    for (let i = +m[2]; i <= +(m[3] ?? m[2]); i++) out.push([m[1], i]);
+    return out;
+  });
+
+let rows = [];
+let limit = PAGE;
+
+async function load(year) {
+  status.textContent = "読み込み中…";
+  rows = (await getJSON(`data/${year}.json`)).map((r) => ({
+    ...r,
+    terms: r.term.split(","),
+    slots: slots(r.schedule),
+    text: norm([r.code, r.title, ...r.teachers].join(" ")),
+  }));
+  setOptions(f.faculty, uniq(rows.map((r) => r.faculty)));
+  updateDepartments();
+  render();
+}
+
+function updateDepartments() {
+  const fac = f.faculty.value;
+  setOptions(f.department, fac ? uniq(rows.filter((r) => r.faculty === fac).map((r) => r.department)) : []);
+  f.department.disabled = !fac;
+}
+
+function render() {
+  const [fac, dep, term, day, period] = [f.faculty, f.department, f.term, f.day, f.period].map((e) => e.value);
+  const words = norm(f.q.value).split(/\s+/).filter(Boolean);
+  const hits = rows.filter((r) =>
+    (!fac || r.faculty === fac) &&
+    (!dep || r.department === dep) &&
+    (!term || r.terms.includes(term)) &&
+    ((!day && !period) || r.slots.some(([d, p]) => (!day || d === day) && (!period || p === +period))) &&
+    words.every((w) => r.text.includes(w)),
+  );
+  tbody.innerHTML = hits.slice(0, limit).map((r) => `<tr>
+    <td>${esc(r.code)}</td>
+    <td>${link(r.url.ja, esc(r.title))}${r.url.en ? ` <small>${link(r.url.en, "[英]")}</small>` : ""}</td>
+    <td>${r.teachers.map(esc).join("<br>")}</td>
+    <td>${esc(r.term)}</td>
+    <td>${esc(r.schedule)}</td>
+    <td>${esc(r.faculty)}${r.department ? `<br><small>${esc(r.department)}</small>` : ""}</td>
+  </tr>`).join("");
+  status.textContent = `${hits.length} 件` + (hits.length > limit ? `（先頭 ${limit} 件を表示）` : "");
+  more.hidden = hits.length <= limit;
+}
+
+form.addEventListener("submit", (e) => e.preventDefault());
+form.addEventListener("input", (e) => {
+  limit = PAGE;
+  if (e.target === f.year) return load(f.year.value);
+  if (e.target === f.faculty) updateDepartments();
+  render();
+});
+more.addEventListener("click", () => {
+  limit += PAGE;
+  render();
+});
+addEventListener("unhandledrejection", (e) => (status.textContent = `読み込みに失敗しました: ${e.reason?.message ?? e.reason}`));
+
+const years = await getJSON("data/years.json");
+f.year.innerHTML = years.map((y) => `<option>${esc(y)}</option>`).join("");
+await load(years[0]);
+</script>
+</body>
+</html>
